@@ -1,8 +1,8 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 const INSIGHTS_URL = 'https://www.epam.com/insights';
 
-async function ensureHamburgerMenuOpen(page: any) {
+async function ensureHamburgerMenuOpen(page: Page) {
   // On some viewports the main navigation is collapsed behind a hamburger button.
   const banner = page.getByRole('banner');
   const menuToggle = banner.getByRole('button').first();
