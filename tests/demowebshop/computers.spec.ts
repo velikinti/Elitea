@@ -103,9 +103,10 @@ test.describe('Demo Web Shop - Computers category & related flows', () => {
     ]);
 
     if (page.url().includes('/cart') || (await page.locator('#bar-notification').isVisible())) {
-      const after = await expect
-        .poll(() => cartQty.textContent())
-        .then(text => Number((text?.match(/\d+/)?.[0] ?? '0')));
+      const after = await expect.poll(async () => {
+        const text = await cartQty.textContent();
+        return Number((text?.match(/\d+/)?.[0] ?? '0'));
+      });
       expect(after).toBeGreaterThanOrEqual(before);
     } else {
       // Redirected to PDP is acceptable outcome for configurable product.
