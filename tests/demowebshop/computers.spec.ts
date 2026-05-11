@@ -102,9 +102,10 @@ test.describe('Demo Web Shop - Computers category & related flows', () => {
       page.locator('#bar-notification').waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined),
     ]);
 
-    if (page.url().includes('/cart') || page.locator('#bar-notification').isVisible()) {
-      const afterText = (await cartQty.textContent()) ?? beforeText;
-      const after = Number((afterText.match(/\d+/)?.[0] ?? '0'));
+    if (page.url().includes('/cart') || (await page.locator('#bar-notification').isVisible())) {
+      const after = await expect
+        .poll(() => cartQty.textContent())
+        .then(text => Number((text?.match(/\d+/)?.[0] ?? '0')));
       expect(after).toBeGreaterThanOrEqual(before);
     } else {
       // Redirected to PDP is acceptable outcome for configurable product.
@@ -160,10 +161,18 @@ test.describe('Demo Web Shop - Computers category & related flows', () => {
   test('Server/network failure for /computers shows error UI (substitution via route abort)', async ({ page, baseURL }) => {
     await page.route('**/computers', route => route.abort('failed'));
 
-    await page.goto(`${baseURL}/computers`, { waitUntil: 'domcontentloaded' });
+    let navError: unknown;
+    try {
+      await page.goto(`${baseURL}/computers`, { waitUntil: 'domcontentloaded' });
+    } catch (e) {
+      navError = e;
+    }
 
-    // Expect browser-level error page (Playwright normalizes this by having no title match or a non-OK response).
-    // We assert the document did not load the expected Computers H1.
-    await expect(page.getByRole('heading', { name: 'Computers' })).not.toBeVisible();
+    // Either the navigation fails (expected), or the page loads without rendering the normal Computers content.
+    if (!navError) {
+      await expect(page.getByRole('heading', { name: 'Computers' })).not.toBeVisible();
+    } else {
+      expect(navError).toBeTruthy();
+    }
   });
 });
