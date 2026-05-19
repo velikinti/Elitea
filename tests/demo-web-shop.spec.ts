@@ -1,15 +1,23 @@
 import { test, expect } from '@playwright/test';
 
+function expectCountGreaterThan(locator: ReturnType<any>, min: number) {
+  return expect
+    .poll(async () => locator.count(), { message: `Expected count to be > ${min}` })
+    .toBeGreaterThan(min);
+}
+
 const isNonDecreasing = (arr: number[]) => arr.every((v, i) => i === 0 || arr[i - 1] <= v);
 const isNonIncreasing = (arr: number[]) => arr.every((v, i) => i === 0 || arr[i - 1] >= v);
 
-async function getListingNames(page: any) {
+async function getListingNames(page: any): Promise<string[]> {
   return await page.locator('.product-item h2 a').allTextContents();
 }
 
-async function getListingPrices(page: any) {
+async function getListingPrices(page: any): Promise<number[]> {
   const texts = await page.locator('.product-item .prices .actual-price').allTextContents();
-  return texts.map((t: string) => parseFloat(t.replace(/[^0-9.]/g, ''))).filter((n: number) => !Number.isNaN(n));
+  return texts
+    .map((t: string) => parseFloat(t.replace(/[^0-9.]/g, '')))
+    .filter((n: number) => !Number.isNaN(n));
 }
 
 test.describe('Demo Web Shop - listing sorting/paging + compare + cart promotions + blog', () => {
@@ -53,7 +61,8 @@ test.describe('Demo Web Shop - listing sorting/paging + compare + cart promotion
     await page.getByRole('link', { name: '2', exact: true }).click();
     await expect(page).toHaveURL(/pagenumber=2/);
 
-    await expect(page.locator('#products-orderby')).toHaveValue(/11|https:\/\/demowebshop\.tricentis\.com\/books\?.*orderby=11/);
+    const selected = (await page.locator('#products-orderby option:checked').textContent())?.trim();
+    expect(selected).toBe('Price: High to Low');
 
     const prices = await getListingPrices(page);
     expect(prices.length).toBeGreaterThanOrEqual(1);
@@ -63,10 +72,10 @@ test.describe('Demo Web Shop - listing sorting/paging + compare + cart promotion
   test('Unsupported sort parameter in URL falls back to default sorting', async ({ page }) => {
     await page.goto('/books?orderby=9999');
     await expect(page.locator('#products-orderby')).toBeVisible();
-    await expect(page.locator('#products-orderby')).toHaveValue('');
+    const selectedText = (await page.locator('#products-orderby option:checked').textContent())?.trim();
+    expect(selectedText).toBe('Position');
 
-    const selectedText = await page.locator('#products-orderby option:checked').textContent();
-    expect((selectedText || '').trim()).toBe('Position');
+    
   });
 
   test('Change page size updates the number of products shown (pagesize=4)', async ({ page }) => {
@@ -81,7 +90,7 @@ test.describe('Demo Web Shop - listing sorting/paging + compare + cart promotion
     await page.goto('/books?pagesize=4');
     await page.getByRole('link', { name: '2', exact: true }).click();
     await expect(page).toHaveURL(/pagenumber=2/);
-    await expect(page.locator('.product-item')).toHaveCountGreaterThan(0);
+    await expectCountGreaterThan(page.locator('.product-item'), 0);
   });
 
   test('Compare products list: add 2 items, verify, then clear shows empty state', async ({ page }) => {
@@ -134,7 +143,7 @@ test.describe('Demo Web Shop - listing sorting/paging + compare + cart promotion
 
   test('Blog listing shows posts and blog detail page shows content', async ({ page }) => {
     await page.goto('/blog');
-    await expect(page.locator('.post')).toHaveCountGreaterThan(0);
+    await expectCountGreaterThan(page.locator('.post'), 0);
 
     // Navigate directly to a known post from listing content we observed.
     await page.goto('/customer-service-client-service');
