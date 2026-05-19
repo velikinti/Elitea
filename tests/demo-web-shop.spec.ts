@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-function expectCountGreaterThan(locator: ReturnType<any>, min: number) {
+function expectCountGreaterThan(locator: any, min: number) {
   return expect
     .poll(async () => locator.count(), { message: `Expected count to be > ${min}` })
     .toBeGreaterThan(min);
