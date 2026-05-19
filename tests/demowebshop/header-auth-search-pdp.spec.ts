@@ -6,19 +6,8 @@ function uniqueEmail(prefix = 'new.user') {
   return `${prefix}+${Date.now()}@example.com`;
 }
 
-async function assertNoCriticalConsoleErrors(page: any) {
-  // The demo site sometimes logs third-party resource load errors (e.g., addthis). Ignore those.
-  const ignored = [/addthis_widget\.js/i, /net::ERR_NAME_NOT_RESOLVED/i];
-  const errors = page
-    .console()
-    ?.filter?.((m: any) => m.type?.() === 'error')
-    ?.filter?.((m: any) => !ignored.some((re) => re.test(m.text())));
-
-  // Fallback: explicit collection via Playwright events is implemented per-test below.
-  if (Array.isArray(errors) && errors.length > 0) {
-    throw new Error(`Unexpected console errors: ${errors.map((e: any) => e.text()).join('\n')}`);
-  }
-}
+// Note: console error assertions are implemented per-test via page.on('console', ...)
+// because Playwright does not provide a built-in way to query past console messages.
 
 test.describe('Demo Web Shop - Header navigation, registration/login, search, PDP', () => {
   test('Navigate to home via site logo from a product details page', async ({ page }) => {
