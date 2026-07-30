@@ -1,0 +1,578 @@
+import os
+import json
+from typing import Dict, List, Optional, Union
+from pathlib import Path
+from dataclasses import dataclass, asdict
+import ast
+import logging
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class FrameworkComponent:
+    """Represents a component found in the framework (class, function, etc)"""
+    name: str
+    type: str  # 'class', 'function', 'method', etc
+    path: str
+    patterns: List[str] = None
+    description: Optional[str] = None
+
+@dataclass
+import os
+from pathlib import Path
+from typing import Dict, List, Optional
+import logging
+from openai import AzureOpenAI
+import json
+
+logger = logging.getLogger(__name__)
+
+class FrameworkAnalysis:
+    """Represents the analysis results of a test framework."""
+    
+    def __init__(self):
+        self.base_classes = {}
+        self.utility_functions = {}
+        self.patterns = {
+            'test_setup': [],
+            'assertions': [],
+            'request_patterns': [],
+            'response_handling': []
+        }
+        self.client_class = None
+        self.response_class = None
+        self.assertion_utils = None
+        self.conventions = {
+            'naming': '',
+            'organization': '',
+            'structure': '',
+            'documentation': ''
+        }
+
+    @classmethod
+    def from_llm_response(cls, llm_response: dict) -> 'FrameworkAnalysis':
+        """Create FrameworkAnalysis instance from LLM response."""
+        analysis = cls()
+        analysis.base_classes = llm_response.get('base_classes', {})
+        analysis.utility_functions = llm_response.get('utility_functions', {})
+        analysis.patterns = llm_response.get('patterns', {})
+        analysis.client_class = llm_response.get('client_class')
+        analysis.response_class = llm_response.get('response_class')
+        analysis.assertion_utils = llm_response.get('assertion_utils')
+        analysis.conventions = llm_response.get('conventions', {})
+        return analysis
+
+class FrameworkAnalyzer:
+    """Analyzes test framework structure and patterns using LLM."""
+
+    def __init__(self, framework_path: str):
+        """Initialize analyzer with framework path."""
+        self.framework_path = framework_path
+        self.llm_client = AzureOpenAI()
+        
+    def analyze(self) -> FrameworkAnalysis:
+        """Analyze the framework using LLM and return results."""
+        try:
+            # Collect framework code
+            framework_code = self._collect_framework_code()
+            
+            # Get LLM analysis
+            completion = self.llm_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": self._get_analysis_prompt()},
+                    {"role": "user", "content": f"Analyze this test framework code:\n\n{framework_code}"}
+                ],
+                temperature=0,
+                max_tokens=2000
+            )
+            
+            # Parse LLM response
+            analysis_text = completion.choices[0].message.content
+            try:
+                analysis_json = json.loads(analysis_text)
+                analysis = FrameworkAnalysis.from_llm_response(analysis_json)
+                logger.info("Framework analysis completed successfully using LLM")
+                return analysis
+            except json.JSONDecodeError:
+                logger.error("Failed to parse LLM response as JSON")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Framework analysis failed: {str(e)}")
+            # Fall back to basic analysis
+            return self._basic_analysis()
+    
+    def _collect_framework_code(self) -> str:
+        """Collect all Python files in the framework directory."""
+        framework_files = []
+        for root, dirs, files in os.walk(self.framework_path):
+            for file in files:
+                if file.endswith(".py"):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, "r") as f:
+                            framework_files.append(f"# File: {file_path}\n{f.read()}\n")
+                    except Exception as e:
+                        logger.warning(f"Failed to read {file_path}: {str(e)}")
+        return "\n".join(framework_files)
+            
+    def _basic_analysis(self) -> FrameworkAnalysis:
+        """Fallback basic analysis without LLM."""
+        logger.info("Performing basic analysis without LLM")
+        analysis = FrameworkAnalysis()
+        
+        for root, dirs, files in os.walk(self.framework_path):
+            for file in files:
+                if not file.endswith(".py"):
+                    continue
+                    
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r") as f:
+                        content = f.read()
+                        
+                    # Basic component identification
+                    if "class APIClient" in content:
+                        analysis.client_class = {"name": "APIClient", "file": file_path}
+                        
+                    if "class APIResponse" in content:
+                        analysis.response_class = {"name": "APIResponse", "file": file_path}
+                        
+                    if "assert_response" in content:
+                        analysis.assertion_utils = {"name": "assert_response", "file": file_path}
+                        
+                    # Basic pattern extraction
+                    if "def test_" in content:
+                        analysis.patterns['test_setup'].extend(
+                            [line.strip() for line in content.split('\n') 
+                             if 'def setup' in line.lower() or '@pytest.fixture' in line]
+                        )
+                        analysis.patterns['assertions'].extend(
+                            [line.strip() for line in content.split('\n')
+                             if 'assert' in line and not line.strip().startswith('#')]
+                        )
+                        analysis.patterns['request_patterns'].extend(
+                            [line.strip() for line in content.split('\n')
+                             if any(p in line for p in ['client.request', 'client.get', 'client.post'])]
+                        )
+                        analysis.patterns['response_handling'].extend(
+                            [line.strip() for line in content.split('\n')
+                             if 'response.' in line and not line.strip().startswith('#')]
+                        )
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to analyze {file_path}: {str(e)}")
+                    continue
+        
+        # Remove duplicates while preserving order
+        for pattern_type in analysis.patterns:
+            analysis.patterns[pattern_type] = list(dict.fromkeys(
+                analysis.patterns[pattern_type]
+            ))
+            
+        return analysis
+        
+    def _get_analysis_prompt(self) -> str:
+        """Get the prompt for framework analysis."""
+        return """You are an expert test automation framework analyzer. Analyze the provided framework code and identify:
+
+1. Key Components:
+- Base classes and their purposes
+- Utility functions and their usage
+- Client and response handling classes
+- Assertion utilities and patterns
+
+2. Common Patterns:
+- Test setup and initialization
+- API request construction
+- Response validation
+- Error handling
+- Assertion styles
+
+3. Framework Conventions:
+- Naming conventions
+- File organization
+- Test structure
+- Documentation standards
+
+Provide the analysis in the following JSON structure:
+{
+    "base_classes": {
+        "class_name": {"purpose": "", "file": "", "key_methods": []}
+    },
+    "utility_functions": {
+        "function_name": {"purpose": "", "file": "", "usage_pattern": ""}
+    },
+    "patterns": {
+        "test_setup": [],
+        "assertions": [],
+        "request_patterns": [],
+        "response_handling": []
+    },
+    "client_class": {"name": "", "file": "", "key_features": []},
+    "response_class": {"name": "", "file": "", "key_features": []},
+    "assertion_utils": {"name": "", "file": "", "key_patterns": []},
+    "conventions": {
+        "naming": "",
+        "organization": "",
+        "structure": "",
+        "documentation": ""
+    }
+}
+
+Focus on identifying reusable patterns and conventions that can guide test script generation."""
+
+class FrameworkAnalysis:
+    """Represents the analysis results of a test framework."""
+    
+    def __init__(self):
+        self.base_classes = {}
+        self.utility_functions = {}
+        self.patterns = {
+            'test_setup': [],
+            'assertions': [],
+            'request_patterns': [],
+            'response_handling': []
+        }
+        self.client_class = None
+        self.response_class = None
+        self.assertion_utils = None
+        self.conventions = {
+            'naming': '',
+            'organization': '',
+            'structure': '',
+            'documentation': ''
+        }
+
+    @classmethod
+    def from_llm_response(cls, llm_response: dict) -> 'FrameworkAnalysis':
+        """Create FrameworkAnalysis instance from LLM response."""
+        analysis = cls()
+        analysis.base_classes = llm_response.get('base_classes', {})
+        analysis.utility_functions = llm_response.get('utility_functions', {})
+        analysis.patterns = llm_response.get('patterns', {})
+        analysis.client_class = llm_response.get('client_class')
+        analysis.response_class = llm_response.get('response_class')
+        analysis.assertion_utils = llm_response.get('assertion_utils')
+        analysis.conventions = llm_response.get('conventions', {})
+        return analysis
+        
+class FrameworkAnalyzer:
+"""Analyzes test framework structure and patterns using LLM."""
+
+    def __init__(self, framework_path: str):
+        """Initialize analyzer with framework path."""
+        self.framework_path = framework_path
+        self.llm_client = AzureOpenAI()
+        
+    def analyze(self) -> FrameworkAnalysis:
+        """Analyze the framework using LLM and return results."""
+        try:
+            # Collect framework code
+            framework_code = self._collect_framework_code()
+            
+            # Get LLM analysis
+            completion = self.llm_client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": FRAMEWORK_ANALYSIS_PROMPT},
+                    {"role": "user", "content": f"Analyze this test framework code:\n\n{framework_code}"}
+                ],
+                temperature=0,
+                max_tokens=2000
+            )
+            
+            # Parse LLM response
+            analysis_text = completion.choices[0].message.content
+            try:
+                analysis_json = json.loads(analysis_text)
+                analysis = FrameworkAnalysis.from_llm_response(analysis_json)
+                logger.info("Framework analysis completed successfully using LLM")
+                return analysis
+            except json.JSONDecodeError:
+                logger.error("Failed to parse LLM response as JSON")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Framework analysis failed: {str(e)}")
+            # Fall back to basic analysis
+            return self._basic_analysis()
+    
+    def _collect_framework_code(self) -> str:
+        """Collect all Python files in the framework directory."""
+        framework_files = []
+        for root, dirs, files in os.walk(self.framework_path):
+            for file in files:
+                if file.endswith(".py"):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, "r") as f:
+                            framework_files.append(f"# File: {file_path}\n{f.read()}\n")
+                    except Exception as e:
+                        logger.warning(f"Failed to read {file_path}: {str(e)}")
+        return "\n".join(framework_files)
+            
+    def _basic_analysis(self) -> FrameworkAnalysis:
+        """Fallback basic analysis without LLM."""
+        logger.info("Performing basic analysis without LLM")
+        analysis = FrameworkAnalysis()
+        
+        for root, dirs, files in os.walk(self.framework_path):
+            for file in files:
+                if not file.endswith(".py"):
+                    continue
+                    
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, "r") as f:
+                        content = f.read()
+                        
+                    # Basic component identification
+                    if "class APIClient" in content:
+                        analysis.client_class = {"name": "APIClient", "file": file_path}
+                        
+                    if "class APIResponse" in content:
+                        analysis.response_class = {"name": "APIResponse", "file": file_path}
+                        
+                    if "assert_response" in content:
+                        analysis.assertion_utils = {"name": "assert_response", "file": file_path}
+                        
+                    # Basic pattern extraction
+                    if "def test_" in content:
+                        analysis.patterns['test_setup'].extend(
+                            [line.strip() for line in content.split('\n') 
+                             if 'def setup' in line.lower() or '@pytest.fixture' in line]
+                        )
+                        analysis.patterns['assertions'].extend(
+                            [line.strip() for line in content.split('\n')
+                             if 'assert' in line and not line.strip().startswith('#')]
+                        )
+                        analysis.patterns['request_patterns'].extend(
+                            [line.strip() for line in content.split('\n')
+                             if any(p in line for p in ['client.request', 'client.get', 'client.post'])]
+                        )
+                        analysis.patterns['response_handling'].extend(
+                            [line.strip() for line in content.split('\n')
+                             if 'response.' in line and not line.strip().startswith('#')]
+                        )
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to analyze {file_path}: {str(e)}")
+                    continue
+        
+        # Remove duplicates while preserving order
+        for pattern_type in analysis.patterns:
+            analysis.patterns[pattern_type] = list(dict.fromkeys(
+                analysis.patterns[pattern_type]
+            ))
+            
+        return analysis
+        self.llm_client = AzureOpenAI()
+
+    def to_dict(self):
+        return asdict(self)
+
+    def to_json(self):
+        return json.dumps(self.to_dict(), indent=2)
+
+    def generate_framework_prompt(self) -> str:
+        """Generate a descriptive prompt about the framework's structure and patterns"""
+        prompt = f"""This test framework is a {self.framework_type} framework with the following structure:
+
+1. Core Components:"""
+        
+        if self.client_info:
+            prompt += f"\n- API Client: {self.client_info.name} in {self.client_info.path}"
+        if self.response_info:
+            prompt += f"\n- Response Handler: {self.response_info.name} in {self.response_info.path}"
+        if self.assertion_info:
+            prompt += f"\n- Assertion Utilities: {self.assertion_info.name} in {self.assertion_info.path}"
+
+        prompt += "\n\n2. Base Classes:"
+        for name, comp in self.base_classes.items():
+            prompt += f"\n- {name}: {comp.description or 'No description'}"
+
+        prompt += "\n\n3. Common Test Patterns:"
+        for pattern_type, patterns in self.test_patterns.items():
+            prompt += f"\n\n{pattern_type.replace('_', ' ').title()}:"
+            for pattern in patterns[:3]:  # Show top 3 examples
+                prompt += f"\n- {pattern}"
+
+        prompt += "\n\n4. Key Utility Functions:"
+        for name, func in self.utility_functions.items():
+            prompt += f"\n- {name}: {func.description or 'No description'}"
+
+        return prompt
+
+class FrameworkAnalyzer:
+    def __init__(self, framework_path: str):
+        self.framework_path = Path(framework_path)
+        self.framework_files = []
+        self.analysis = None
+
+    def analyze(self) -> FrameworkAnalysis:
+        """Analyze the test framework and return standardized analysis"""
+        try:
+            # Find all Python files in the framework
+            self.framework_files = self._get_framework_files()
+            
+            # Initialize analysis components
+            analysis = FrameworkAnalysis(
+                framework_type=self._detect_framework_type(),
+                base_classes={},
+                utility_functions={},
+                test_patterns={
+                    'test_setup': [],
+                    'assertions': [],
+                    'request_patterns': [],
+                    'response_handling': [],
+                    'fixtures': []
+                },
+                config=self._get_framework_config()
+            )
+
+            # Analyze each file
+            for file_path in self.framework_files:
+                self._analyze_file(file_path, analysis)
+
+            # Store and return analysis
+            self.analysis = analysis
+            return analysis
+
+        except Exception as e:
+            logger.error(f"Error analyzing framework: {str(e)}")
+            raise
+
+    def _get_framework_files(self) -> List[Path]:
+        """Get all Python files in the framework directory"""
+        python_files = []
+        for root, _, files in os.walk(self.framework_path):
+            for file in files:
+                if file.endswith('.py'):
+                    python_files.append(Path(root) / file)
+        return python_files
+
+    def _detect_framework_type(self) -> str:
+        """Detect the type of test framework being used"""
+        # Look for framework-specific markers
+        framework_markers = {
+            'pytest': ['pytest.ini', 'conftest.py', '@pytest'],
+            'unittest': ['unittest.TestCase', 'unittest.main()'],
+            'robot': ['*.robot', 'robot.api'],
+            'behave': ['steps/*.py', 'features/*.feature'],
+            'cucumber': ['step_definitions', '*.feature']
+        }
+        
+        for marker_type, markers in framework_markers.items():
+            for marker in markers:
+                # Check file existence or content patterns
+                if any(marker in f.read_text() for f in self.framework_files if f.is_file()):
+                    return marker_type
+        
+        return "unknown"
+
+    def _get_framework_config(self) -> Dict:
+        """Get framework configuration from config files"""
+        config = {}
+        config_files = ['pytest.ini', 'conftest.py', 'settings.py', 'config.py']
+        
+        for config_file in config_files:
+            config_path = self.framework_path / config_file
+            if config_path.exists():
+                config[config_file] = config_path.read_text()
+                
+        return config
+
+    def _analyze_file(self, file_path: Path, analysis: FrameworkAnalysis):
+        """Analyze a single Python file for framework components"""
+        try:
+            content = file_path.read_text()
+            
+            # Look for key components
+            if "APIClient" in content:
+                analysis.client_info = FrameworkComponent(
+                    name="APIClient",
+                    type="class",
+                    path=str(file_path)
+                )
+            
+            if "APIResponse" in content:
+                analysis.response_info = FrameworkComponent(
+                    name="APIResponse",
+                    type="class",
+                    path=str(file_path)
+                )
+            
+            if "assert_response" in content:
+                analysis.assertion_info = FrameworkComponent(
+                    name="assert_response",
+                    type="function",
+                    path=str(file_path)
+                )
+
+            # Extract patterns
+            if "def test_" in content:
+                # Test setup patterns
+                setup_lines = [line.strip() for line in content.split('\n') 
+                             if 'def setup' in line.lower() or '@pytest.fixture' in line]
+                analysis.test_patterns['test_setup'].extend(setup_lines)
+                
+                # Assertion patterns
+                assert_lines = [line.strip() for line in content.split('\n')
+                              if 'assert' in line and not line.strip().startswith('#')]
+                analysis.test_patterns['assertions'].extend(assert_lines)
+                
+                # Request patterns
+                request_lines = [line.strip() for line in content.split('\n')
+                               if any(p in line for p in ['client.request', 'client.get', 'client.post'])]
+                analysis.test_patterns['request_patterns'].extend(request_lines)
+                
+                # Response handling
+                response_lines = [line.strip() for line in content.split('\n')
+                                if 'response.' in line and not line.strip().startswith('#')]
+                analysis.test_patterns['response_handling'].extend(response_lines)
+
+            # Parse AST for more detailed analysis
+            tree = ast.parse(content)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    # Identify base classes
+                    bases = [base.id for base in node.bases 
+                            if isinstance(base, ast.Name)]
+                    if bases:
+                        analysis.base_classes[node.name] = FrameworkComponent(
+                            name=node.name,
+                            type="class",
+                            path=str(file_path),
+                            description=f"Extends {', '.join(bases)}"
+                        )
+                
+                elif isinstance(node, ast.FunctionDef):
+                    # Identify utility functions
+                    if (node.name.startswith('assert_') or 
+                        node.name.startswith('validate_') or 
+                        node.name.startswith('check_')):
+                        analysis.utility_functions[node.name] = FrameworkComponent(
+                            name=node.name,
+                            type="function",
+                            path=str(file_path),
+                            description=ast.get_docstring(node)
+                        )
+
+        except Exception as e:
+            logger.warning(f"Error analyzing file {file_path}: {str(e)}")
+
+    def save_analysis(self, output_path: str):
+        """Save the framework analysis to a file"""
+        if not self.analysis:
+            raise ValueError("No analysis available. Run analyze() first.")
+            
+        output_path = Path(output_path)
+        output_path.write_text(self.analysis.to_json())
+
+    @classmethod
+    def load_analysis(cls, input_path: str) -> FrameworkAnalysis:
+        """Load a previously saved framework analysis"""
+        data = json.loads(Path(input_path).read_text())
+        return FrameworkAnalysis(**data)
