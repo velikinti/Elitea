@@ -13,13 +13,27 @@ class SubmitFrameworkAnalysisJobRequest(BaseModel):
 
 
 class SubmitGenerateTestScriptsJobRequest(BaseModel):
-    api_spec: str = Field(..., description="Swagger/OpenAPI content or curl to parse")
-    framework_path: str | None = Field(None, description="Optional framework path")
+    test_cases: list[dict | str] = Field(
+        ...,
+        description="List of test cases as dicts or strings to generate test scripts from",
+    )
+    framework_analyzer_path: str = Field(
+        ...,
+        description="Path to the framework analyzer output/directory",
+    )
+    review: str | None = Field(
+        None,
+        description="Optional review/instructions for generation",
+    )
+    file: str | None = Field(
+        None,
+        description="Optional file identifier/path associated with the request",
+    )
 
 
 class SubmitIntegrateScriptToFrameworkJobRequest(BaseModel):
-    framework_path: str
-    test_script_path: str
+    test_file_name: str
+    framework_test_dir: str
 
 
 class JobSubmittedResponse(BaseModel):
