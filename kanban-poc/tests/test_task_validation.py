@@ -63,7 +63,10 @@ def test_validate_due_date_accepts_iso_date_and_normalizes():
     assert validate_due_date("2026-08-07") == "2026-08-07"
 
 
-@pytest.mark.parametrize("due", ["2026/08/07", "07-08-2026", "2026-8-7", "not-a-date", "2026-02-30"])
+@pytest.mark.parametrize(
+    "due",
+    ["2026/08/07", "07-08-2026", "2026-8-7", "not-a-date", "2026-02-30"],
+)
 def test_validate_due_date_rejects_invalid(due):
     with pytest.raises(ValidationError):
         validate_due_date(due)
