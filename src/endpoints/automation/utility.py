@@ -3,9 +3,11 @@ import time
 import os
 import json
 import re
+import shutil
 from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
 from enum import Enum
+from pathlib import Path
 
 from fastapi import HTTPException, status
 # from endpoints.agents.gpt4o import TestCaseGeneratorGPT4o as TestCaseGeneratorAgent
@@ -29,6 +31,39 @@ from endpoints.automation.schemas import (
 from settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_within_root(candidate_path: Path, root_path: Path, field_name: str) -> Path:
+    """
+    Ensure candidate_path is within root_path boundary.
+
+    Uses resolve() then relative_to() to enforce the boundary. Raises ValueError
+    with a clear message if candidate escapes the root.
+    """
+    candidate_resolved = candidate_path.resolve()
+    root_resolved = root_path.resolve()
+
+    try:
+        candidate_resolved.relative_to(root_resolved)
+    except ValueError as e:
+        raise ValueError(
+            f"{field_name} is not permitted: path must be within '{root_resolved}', got '{candidate_resolved}'"
+        ) from e
+
+    return candidate_resolved
+
+
+def _resolve_under_root(root: Path, candidate: str, field_name: str) -> Path:
+    """
+    Resolve candidate under root with boundary enforcement.
+
+    If candidate is absolute -> use as-is (but still enforce within root).
+    If candidate is relative -> interpret as root / candidate.
+    """
+    root_path = root.resolve()
+    candidate_path = Path(candidate)
+    combined = candidate_path if candidate_path.is_absolute() else (root_path / candidate_path)
+    return _ensure_within_root(combined, root_path, field_name)
 
 
 class LLMType(str, Enum):
@@ -219,6 +254,8 @@ def generate_test_scripts(
         base_output_dir = os.path.join(os.getcwd(), settings.base_output_folder)
         output_dir = os.path.join(base_output_dir, "testscript")
         os.makedirs(output_dir, exist_ok=True)
+
+        generated_tests_dir = (Path.cwd() / settings.base_output_folder / "testscript").resolve()
         
         # Handle review case - update existing files
         if review and file_path:
@@ -236,7 +273,13 @@ def generate_test_scripts(
             # Update existing files
             for file_path_to_update, script_updates in files_to_update.items():
                 try:
-                    with open(file_path_to_update, "r", encoding="utf-8") as f:
+                    permitted_path = _resolve_under_root(
+                        generated_tests_dir,
+                        file_path_to_update,
+                        field_name="file_path"
+                    )
+
+                    with open(permitted_path, "r", encoding="utf-8") as f:
                         existing_content = f.read()
                     
                     for update in script_updates:
@@ -248,12 +291,17 @@ def generate_test_scripts(
                         
                         if new_content != existing_content:
                             existing_content = new_content
-                            logger.info(f"Updated test function for {test_case_code} in {os.path.basename(file_path_to_update)}")
+                            logger.info(f"Updated test function for {test_case_code} in {permitted_path.name}")
                     
-                    with open(file_path_to_update, "w", encoding="utf-8") as f:
+                    with open(permitted_path, "w", encoding="utf-8") as f:
                         f.write(existing_content)
                     
-                    logger.info(f"Updated existing file: {os.path.basename(file_path_to_update)}")
+                    logger.info(f"Updated existing file: {permitted_path.name}")
+                except ValueError as ve:
+                    detail = str(ve)
+                    if "is not permitted" in detail:
+                        raise ValueError(f"file path is not permitted: {detail}") from ve
+                    raise
                 except Exception as e:
                     logger.error(f"Error updating file {file_path_to_update}: {str(e)}")
                     raise
@@ -451,69 +499,42 @@ def integrate_script_to_framework(
         Exception: If integration or test execution fails
     """
     import subprocess
-    import shutil
     
     try:
-        # Handle test file path - can be absolute or relative
-        if os.path.isabs(test_file_name):
-            # Full path provided
-            source_file = test_file_name
-            test_file_basename = os.path.basename(test_file_name)
-        else:
-            # Just filename provided - look in outputfolder/testscript/
-            base_output_dir = os.path.join(os.getcwd(), settings.base_output_folder)
-            generated_tests_dir = os.path.join(base_output_dir, "testscript")
-            source_file = os.path.join(generated_tests_dir, test_file_name)
-            test_file_basename = test_file_name
-        
-        if not os.path.exists(source_file):
+        generated_tests_dir = (Path.cwd() / settings.base_output_folder / "testscript").resolve()
+        os.makedirs(generated_tests_dir, exist_ok=True)
+
+        # Resolve and enforce source file is within generated_tests_dir (even if absolute provided)
+        source_file = _resolve_under_root(
+            generated_tests_dir,
+            test_file_name,
+            field_name="test_file_name"
+        )
+
+        if not source_file.exists():
             raise ValueError(f"Test file not found: {source_file}")
-        
-        # Determine framework test directory
-        if os.path.isabs(framework_test_dir):
-            # Absolute path provided - use it directly
-            target_test_dir = os.path.normpath(framework_test_dir)
-            # Try to determine framework root from the absolute path
-            # Look for common framework root indicators (like parent of api/tests or ui/tests)
-            framework_root = None
-            normalized_path = os.path.normpath(framework_test_dir)
-            parts = normalized_path.split(os.sep)
-            
-            # Look for "api" or "ui" directories in the path
-            for i, part in enumerate(parts):
-                if part in ["api", "ui"] and i > 0:
-                    # Framework root is the parent of api/ui directory
-                    framework_root = os.sep.join(parts[:i])
-                    break
-            
-            # If we couldn't determine, try to find common framework root patterns
-            if not framework_root:
-                # Check if "tests" is in the path - framework root might be parent of tests
-                if "tests" in parts:
-                    tests_index = parts.index("tests")
-                    if tests_index > 0:
-                        framework_root = os.sep.join(parts[:tests_index])
-            
-            # If still couldn't determine, use parent of target_test_dir
-            if not framework_root:
-                framework_root = os.path.dirname(target_test_dir)
-        else:
-            # Relative path - use settings.test_framework_path
-            if not settings.test_framework_path:
-                raise ValueError("Framework path not configured. Please set QA_TEST_FRAMEWORK_PATH in your .env file or provide absolute path for framework_test_dir")
-            
-            if not os.path.exists(settings.test_framework_path):
-                raise ValueError(f"Framework path does not exist: {settings.test_framework_path}")
-            
-            framework_root = os.path.dirname(os.path.normpath(settings.test_framework_path))
-            target_test_dir = os.path.join(framework_root, framework_test_dir)
-        
-        # Create test directory if it doesn't exist
-        os.makedirs(target_test_dir, exist_ok=True)
+
+        test_file_basename = source_file.name
+
+        # Require configured framework root and do not infer from provided framework_test_dir
+        if not settings.test_framework_path:
+            raise ValueError("Framework path not configured. Please set QA_TEST_FRAMEWORK_PATH in your .env file")
+        framework_root = Path(settings.test_framework_path).resolve()
+        if not framework_root.exists():
+            raise ValueError(f"Framework path does not exist: {framework_root}")
+
+        # Resolve target test directory within framework_root (absolute allowed but must be within root)
+        target_test_dir = _resolve_under_root(
+            framework_root,
+            framework_test_dir,
+            field_name="framework_test_dir"
+        )
+
+        target_test_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Framework test directory: {target_test_dir}")
-        
+
         # Copy test file to framework (use basename to avoid path issues)
-        dest_file = os.path.join(target_test_dir, test_file_basename)
+        dest_file = target_test_dir / test_file_basename
         shutil.copy2(source_file, dest_file)
         logger.info(f"Test file copied to framework: {dest_file}")
         
@@ -527,31 +548,31 @@ def integrate_script_to_framework(
         
         # Check for virtual environment in framework root
         venv_paths = [
-            os.path.join(framework_root, "venv"),
-            os.path.join(framework_root, ".venv"),
-            os.path.join(framework_root, "env"),
+            framework_root / "venv",
+            framework_root / ".venv",
+            framework_root / "env",
         ]
         
         for venv_path in venv_paths:
-            if os.path.exists(venv_path):
+            if venv_path.exists():
                 # Windows: venv/Scripts/python.exe, Linux: venv/bin/python
-                python_win = os.path.join(venv_path, "Scripts", "python.exe")
-                python_unix = os.path.join(venv_path, "bin", "python")
-                if os.path.exists(python_win):
-                    python_executable = python_win
+                python_win = venv_path / "Scripts" / "python.exe"
+                python_unix = venv_path / "bin" / "python"
+                if python_win.exists():
+                    python_executable = str(python_win)
                     logger.info(f"Found Python in venv: {python_executable}")
                     break
-                elif os.path.exists(python_unix):
-                    python_executable = python_unix
+                elif python_unix.exists():
+                    python_executable = str(python_unix)
                     logger.info(f"Found Python in venv: {python_executable}")
                     break
         
         # If no venv found, check for poetry environment
         if not python_executable:
-            pyproject_toml = os.path.join(framework_root, "pyproject.toml")
-            if os.path.exists(pyproject_toml):
+            pyproject_toml = framework_root / "pyproject.toml"
+            if pyproject_toml.exists():
                 # Use poetry run pytest
-                pytest_cmd = ["poetry", "run", "pytest", dest_file, "-v", "--tb=short"]
+                pytest_cmd = ["poetry", "run", "pytest", str(dest_file), "-v", "--tb=short"]
                 logger.info("Using poetry to run pytest")
             else:
                 # Fallback: use system python -m pytest
@@ -562,10 +583,10 @@ def integrate_script_to_framework(
         if not pytest_cmd:
             if python_executable:
                 # Use framework's Python to run pytest as module
-                pytest_cmd = [python_executable, "-m", "pytest", dest_file, "-v", "--tb=short"]
+                pytest_cmd = [python_executable, "-m", "pytest", str(dest_file), "-v", "--tb=short"]
             else:
                 # Last resort: use system pytest
-                pytest_cmd = ["pytest", dest_file, "-v", "--tb=short"]
+                pytest_cmd = ["pytest", str(dest_file), "-v", "--tb=short"]
                 logger.warning("Using system pytest - may use wrong environment!")
         
         logger.info(f"Executing: {' '.join(pytest_cmd)}")
@@ -575,22 +596,22 @@ def integrate_script_to_framework(
             # Change to framework root directory to run pytest
             result = subprocess.run(
                 pytest_cmd,
-                cwd=framework_root,
+                cwd=str(framework_root),
                 capture_output=True,
                 text=True,
                 timeout=300  # 5 minute timeout
             )
             
             test_passed = result.returncode == 0
-            test_output = result.stdout + result.stderr
+            test_output = (result.stdout or "") + (result.stderr or "")
             
             if test_passed:
                 logger.info(f"Test execution passed: {test_file_basename}")
                 return {
                     "success": True,
                     "message": f"Test file integrated successfully and test execution passed",
-                    "source_file": source_file,
-                    "destination_file": dest_file,
+                    "source_file": str(source_file),
+                    "destination_file": str(dest_file),
                     "test_execution_success": True,
                     "test_execution_output": test_output
                 }
@@ -599,8 +620,8 @@ def integrate_script_to_framework(
                 return {
                     "success": True,  # Integration succeeded, but test failed
                     "message": f"Test file integrated successfully but test execution failed",
-                    "source_file": source_file,
-                    "destination_file": dest_file,
+                    "source_file": str(source_file),
+                    "destination_file": str(dest_file),
                     "test_execution_success": False,
                     "test_execution_output": test_output
                 }
@@ -611,8 +632,8 @@ def integrate_script_to_framework(
             return {
                 "success": True,  # Integration succeeded, but test timed out
                 "message": f"Test file integrated successfully but test execution timed out",
-                "source_file": source_file,
-                "destination_file": dest_file,
+                "source_file": str(source_file),
+                "destination_file": str(dest_file),
                 "test_execution_success": False,
                 "test_execution_output": error_msg
             }
@@ -622,8 +643,8 @@ def integrate_script_to_framework(
             return {
                 "success": True,  # Integration succeeded, but test execution had error
                 "message": f"Test file integrated successfully but test execution encountered an error",
-                "source_file": source_file,
-                "destination_file": dest_file,
+                "source_file": str(source_file),
+                "destination_file": str(dest_file),
                 "test_execution_success": False,
                 "test_execution_output": error_msg
             }
