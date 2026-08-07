@@ -1,4 +1,5 @@
 from fastapi.routing import APIRouter
+
 from endpoints.automation.routes import router as automation_router
 from endpoints.jobs.routes import router as jobs_router
 
